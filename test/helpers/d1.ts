@@ -69,6 +69,7 @@ export function createTestEnv(overrides: Partial<Env> = {}): Env {
     INTERNAL_JOB_TOKEN: "dev-internal-token",
     GITTENSORY_API_TOKEN: "test-api-token",
     GITTENSORY_MCP_TOKEN: "test-mcp-token",
+    ORB_INGEST_TOKEN: "test-orb-token",
     GITHUB_WEBHOOK_SECRET: "test-webhook-secret",
     GITHUB_APP_PRIVATE_KEY: "test-private-key",
     ADMIN_GITHUB_LOGINS: "jsonbored",

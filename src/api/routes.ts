@@ -2865,9 +2865,10 @@ export function createApp() {
   app.post("/v1/github/webhook", handleGitHubWebhook);
 
   // Gittensory Orb (#1255) — central fleet-calibration collector. Receives anonymized, reversal-aware
-  // outcome batches from self-hosted instances. No auth required: all data is HMAC-anonymized by the sender;
-  // dedup is enforced via UNIQUE(instance_id, repo_hash, pr_hash) in orb_signals. Rate-limited (strict, #1254).
+  // outcome batches from self-hosted instances. A shared collector token gates the write path; sender-side
+  // HMAC anonymization is for privacy, not authentication. Dedup is enforced via UNIQUE(instance_id, repo_hash, pr_hash).
   app.post("/v1/orb/ingest", async (c) => {
+    if (!isAuthorizedOrbIngest(c.env, extractBearerToken(c.req.header("authorization")))) return c.json({ error: "unauthorized" }, 401);
     const body = await c.req.text().catch(() => null);
     if (!body) return c.json({ error: "invalid_request" }, 400);
     const result = await handleOrbIngest(body, c.env.DB);
@@ -4813,6 +4814,11 @@ function skippedPrAuditRemediation(reason: string): string {
 function toIsoQueryDate(value: string): string | undefined {
   const timestamp = Date.parse(value);
   return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : undefined;
+}
+
+
+function isAuthorizedOrbIngest(env: Env, token: string | undefined): boolean {
+  return Boolean(token) && Boolean(env.ORB_INGEST_TOKEN) && token === env.ORB_INGEST_TOKEN;
 }
 
 function requiresApiToken(path: string): boolean {
