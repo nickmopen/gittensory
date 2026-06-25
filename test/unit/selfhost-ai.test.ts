@@ -20,7 +20,11 @@ describe("resolveModel (#979 — never leak the Workers-AI default to a self-hos
 afterEach(() => vi.unstubAllGlobals());
 
 type SpawnResult = { stdout: string; code: number | null };
-type StubSpawn = (cmd: string, args: string[], opts: { env: Record<string, string | undefined>; input?: string; timeoutMs: number }) => Promise<SpawnResult>;
+type StubSpawn = (
+  cmd: string,
+  args: string[],
+  opts: { env: Record<string, string | undefined>; input?: string; timeoutMs: number; cwd?: string },
+) => Promise<SpawnResult>;
 
 describe("createOpenAiCompatibleAi (#979)", () => {
   it("POSTs to /chat/completions and returns { response }", async () => {
@@ -290,23 +294,40 @@ describe("subscription CLI helpers + fail-safe", () => {
       capturedEnv = o.env;
       return { stdout: JSON.stringify({ type: "result", result: "review text" }), code: 0 };
     };
-    const out = await createClaudeCodeAi({ CLAUDE_CODE_OAUTH_TOKEN: "t", ANTHROPIC_API_KEY: "sk-bill" }, stub).run("sonnet", { prompt: "x" });
+    const out = await createClaudeCodeAi({ CLAUDE_CODE_OAUTH_TOKEN: "t", ANTHROPIC_API_KEY: "sk-bill", WORKER_ONLY_VALUE: "internal" }, stub).run("sonnet", {
+      prompt: "x",
+    });
     expect(out.response).toBe("review text");
-    expect(capturedEnv.ANTHROPIC_API_KEY).toBeUndefined(); // scrubbed
+    expect(capturedEnv.ANTHROPIC_API_KEY).toBeUndefined(); // allowlisted subprocess env does not inherit metered API keys
+    expect(capturedEnv.WORKER_ONLY_VALUE).toBeUndefined();
     expect(capturedEnv.CLAUDE_CODE_OAUTH_TOKEN).toBe("t");
   });
 
   it("Codex: 0.142+ exec flags (no --ask-for-approval, has --skip-git-repo-check); --model only when configured", async () => {
     let seen: string[] = [];
-    const ok: StubSpawn = async (_cmd, args) => { seen = args; return { stdout: JSON.stringify({ type: "result", result: "codex review" }), code: 0 }; };
+    let capturedEnv: Record<string, string | undefined> = {};
+    let capturedCwd = "";
+    const ok: StubSpawn = async (_cmd, args, opts) => {
+      seen = args;
+      capturedEnv = opts.env;
+      capturedCwd = opts.cwd ?? "";
+      return { stdout: JSON.stringify({ type: "result", result: "codex review" }), code: 0 };
+    };
     // no configured model + the dual-router's empty model id → OMIT --model (codex picks the account default;
     // forcing e.g. gpt-5 fails on a ChatGPT-account login). And the removed --ask-for-approval must never appear.
-    expect((await createCodexAi({}, ok).run("", { prompt: "x" })).response).toBe("codex review");
+    expect(
+      (await createCodexAi({ PATH: "/bin", CODEX_HOME: "/tmp/codex", WORKER_ONLY_VALUE: "internal", OPENAI_API_KEY: "sk-bill" }, ok).run("", {
+        prompt: "x",
+      })).response,
+    ).toBe("codex review");
     expect(seen).toEqual(["exec", "--json", "--skip-git-repo-check", "--sandbox", "read-only", "--", "x"]);
     expect(seen).not.toContain("--ask-for-approval");
-    // an explicit model (AI_MODEL, or a `codex:<model>` reviewer id) IS passed through
+    expect(capturedEnv).toEqual({ CODEX_HOME: "/tmp/codex", PATH: "/bin" });
+    expect(capturedCwd).toContain("gittensory-ai-");
+    // an explicit model (AI_MODEL, or a `codex:<model>` reviewer id) IS passed through but not inherited as env.
     await createCodexAi({ AI_MODEL: "o4-mini" }, ok).run("", { prompt: "x" });
     expect(seen.join(" ")).toContain("--model o4-mini");
+    expect(capturedEnv.AI_MODEL).toBeUndefined();
     const bad: StubSpawn = async () => ({ stdout: "", code: 1 });
     await expect(createCodexAi({}, bad).run("", { prompt: "x" })).rejects.toThrow(/codex_exit_1/);
   });
