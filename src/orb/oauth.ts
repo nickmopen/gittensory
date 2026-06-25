@@ -14,6 +14,7 @@ import type { Context } from "hono";
 import { isOrbBrokerEnabled, issueOrbEnrollment } from "./broker";
 
 type GitHubUser = { login: string; id?: number };
+type GitHubOrgMembership = { role?: string; state?: string; organization?: { id?: number } };
 
 /** Exchange the OAuth code for the maintainer's access token using the ORB App's OAuth credentials. Null when the
  *  credentials aren't configured or GitHub returns no token. */
@@ -44,20 +45,22 @@ export async function fetchOrbOAuthUser(token: string, fetchImpl: typeof fetch =
 export async function verifyInstallationAdmin(
   token: string,
   userLogin: string,
+  userId: number | null | undefined,
   accountLogin: string | null,
   accountType: string | null,
+  accountId: number | null,
   fetchImpl: typeof fetch = fetch,
 ): Promise<boolean> {
-  if (!accountLogin) return false;
+  if (!accountLogin || accountId === null) return false;
   if (accountType !== "Organization") {
-    return userLogin.toLowerCase() === accountLogin.toLowerCase();
+    return userId === accountId && userLogin.toLowerCase() === accountLogin.toLowerCase();
   }
   const res = await fetchImpl(`https://api.github.com/user/memberships/orgs/${encodeURIComponent(accountLogin)}`, {
     headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "user-agent": "gittensory/0.1" },
   });
   if (!res.ok) return false;
-  const body = (await res.json().catch(() => ({}))) as { role?: string; state?: string };
-  return body.state === "active" && body.role === "admin";
+  const body = (await res.json().catch(() => ({}))) as GitHubOrgMembership;
+  return body.state === "active" && body.role === "admin" && body.organization?.id === accountId;
 }
 
 async function handleOrbEnrollment(c: Context<{ Bindings: Env }>, code: string, installationId: number): Promise<Response> {
@@ -65,12 +68,12 @@ async function handleOrbEnrollment(c: Context<{ Bindings: Env }>, code: string, 
   if (!token) return c.html(landingPage("Couldn't verify your GitHub identity", "The authorization didn't complete — re-run the install from GitHub and try again."), 400);
   const user = await fetchOrbOAuthUser(token);
   if (!user) return c.html(landingPage("Couldn't verify your GitHub identity", "We couldn't read your GitHub account — try the install again."), 400);
-  const install = await c.env.DB.prepare("SELECT account_login, account_type, registered FROM orb_github_installations WHERE installation_id = ?")
+  const install = await c.env.DB.prepare("SELECT account_login, account_type, account_id, registered FROM orb_github_installations WHERE installation_id = ?")
     .bind(installationId)
-    .first<{ account_login: string | null; account_type: string | null; registered: number }>();
+    .first<{ account_login: string | null; account_type: string | null; account_id: number | null; registered: number }>();
   if (!install) return c.html(landingPage("Installation not recognized", "We haven't recorded this installation yet — give it a moment after installing, then retry."), 404);
   if (install.registered !== 1) return c.html(landingPage("Not enabled yet", "This installation isn't enabled for brokered self-host yet — ask the operator to register it, then retry."), 403);
-  const isAdmin = await verifyInstallationAdmin(token, user.login, install.account_login, install.account_type);
+  const isAdmin = await verifyInstallationAdmin(token, user.login, user.id, install.account_login, install.account_type, install.account_id);
   if (!isAdmin) return c.html(landingPage("Admin access required", "You must be an admin of this installation's account to enroll it for self-host."), 403);
   const result = await issueOrbEnrollment(c.env, installationId, { login: user.login, githubId: user.id ?? null });
   /* v8 ignore next -- defensive: the existence + registered=1 checks above already passed, so issueOrbEnrollment
