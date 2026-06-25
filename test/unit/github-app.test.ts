@@ -351,6 +351,39 @@ describe("GitHub check runs", () => {
     expect(capturedBody).not.toHaveProperty("details_url");
   });
 
+  it("publishes a supplied Gate evaluation instead of recomputing from advisory findings", async () => {
+    const privateKey = await generatePrivateKeyPem();
+    let capturedBody: { conclusion?: string; output?: { title?: string; text?: string } } = {};
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input.toString();
+      if (url.includes("/access_tokens")) return Response.json({ token: "installation-token" });
+      if (url.includes("/commits/")) return Response.json({ total_count: 0, check_runs: [] });
+      if (url.includes("/check-runs")) {
+        capturedBody = JSON.parse(String(init?.body)) as typeof capturedBody;
+        return Response.json({ id: 92 }, { status: 201 });
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    const result = await createOrUpdateGateCheckRun(createTestEnv({ GITHUB_APP_PRIVATE_KEY: privateKey }), 123, "JSONbored/gittensory", gateAdvisory("surface123"), {}, {
+      gateEvaluation: {
+        enabled: true,
+        conclusion: "failure",
+        title: "Registry surface review",
+        summary: "Invalid registry surface.",
+        blockers: [{ code: "surface_lane_reject", title: "Registry surface review", severity: "critical", detail: "Invalid registry surface." }],
+        warnings: [],
+      },
+    });
+
+    expect(result).toMatchObject({ kind: "published", id: 92 });
+    expect(capturedBody).toMatchObject({
+      conclusion: "failure",
+      output: { title: "Registry surface review" },
+    });
+    expect(capturedBody.output?.text).toContain("Registry surface review");
+  });
+
   it("finalizes a known pending Gate check by id without listing check runs first", async () => {
     const privateKey = await generatePrivateKeyPem();
     const calls: string[] = [];

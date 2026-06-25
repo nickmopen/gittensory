@@ -4,7 +4,7 @@ import { makeInstallationOctokit } from "./client";
 import { maintainerControlPanelUrl } from "./footer";
 import type { AgentActionMode } from "../settings/agent-execution";
 import { signRs256Jwt } from "../utils/crypto";
-import { evaluateGateCheck, formatCheckRunOutput, formatGateCheckOutput, type CheckRunAnnotationContext, type CheckRunOutput, type GateCheckConclusion, type GateCheckPolicy } from "../rules/advisory";
+import { evaluateGateCheck, formatCheckRunOutput, formatGateCheckOutput, type CheckRunAnnotationContext, type CheckRunOutput, type GateCheckConclusion, type GateCheckPolicy, type GateCheckEvaluation } from "../rules/advisory";
 
 type CheckRunResponse = {
   id: number;
@@ -159,10 +159,10 @@ export async function createOrUpdateGateCheckRun(
   repoFullName: string,
   advisory: Advisory,
   policy: GateCheckPolicy = {},
-  options: { checkRunId?: number | undefined } = {},
+  options: { checkRunId?: number | undefined; gateEvaluation?: GateCheckEvaluation | undefined } = {},
   mode: AgentActionMode = "live",
 ): Promise<CheckRunOutcome | null> {
-  const gate = evaluateGateCheck(advisory, policy);
+  const gate = options.gateEvaluation ?? evaluateGateCheck(advisory, policy);
   return createOrUpdateNamedCheckRun(env, installationId, repoFullName, advisory, {
     name: GITTENSORY_GATE_CHECK_NAME,
     status: "completed",

@@ -2616,6 +2616,7 @@ async function maybePublishPrPublicSurface(
           gatePolicy,
           {
             checkRunId: pendingGateCheckRunId,
+            gateEvaluation,
           },
           mode,
         );
