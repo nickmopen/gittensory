@@ -19,6 +19,7 @@ import {
   listProductUsageDailyRollups,
   listProductUsageEvents,
   listPullRequests,
+  listPullRequestFiles,
   listRepoSyncStates,
   listSignalSnapshots,
   persistSignalSnapshot,
@@ -1366,6 +1367,84 @@ describe("queue processors", () => {
     // simply not merged (no blocking review); with close acting it would be closed.
     const rcAudit = await env.DB.prepare("select outcome from audit_events where event_type = ?").bind("agent.action.request_changes").first<{ outcome: string }>();
     expect(rcAudit).toBeFalsy();
+  });
+
+  it("refreshes pull request files for path-gated pre-merge checks on synchronize (#review-pre-merge-checks)", async () => {
+    const env = createTestEnv({ GITHUB_APP_PRIVATE_KEY: await generatePrivateKeyPem() });
+    await upsertRepositoryFromGitHub(env, { name: "gittensory", full_name: "JSONbored/gittensory", private: false, owner: { login: "JSONbored" } }, 123);
+    await upsertInstallation(env, {
+      installation: {
+        id: 123,
+        account: { login: "JSONbored", id: 1, type: "User" },
+        repository_selection: "selected",
+        permissions: { metadata: "read", pull_requests: "write", issues: "write" },
+        events: ["pull_request"],
+      },
+      repositories: [{ name: "gittensory", full_name: "JSONbored/gittensory", private: false, owner: { login: "JSONbored" } }],
+    });
+    await upsertRepositorySettings(env, {
+      repoFullName: "JSONbored/gittensory",
+      commentMode: "off",
+      publicSurface: "off",
+      autoLabelEnabled: false,
+      checkRunMode: "off",
+      gateCheckMode: "off",
+      autonomy: { merge: "observe", request_changes: "observe" },
+      slopGateMode: "off",
+      mergeReadinessGateMode: "off",
+      manifestPolicyGateMode: "off",
+    });
+    await upsertRepoFocusManifest(env, "JSONbored/gittensory", {
+      review: { pre_merge_checks: [{ name: "Migration approval", require_label: "approved", when_paths: ["migrations/**"], enforce: true }] },
+    });
+    await upsertPullRequestFromGitHub(env, "JSONbored/gittensory", {
+      number: 49,
+      title: "feat: add migration",
+      state: "open",
+      user: { login: "contributor" },
+      head: { sha: "gate125" },
+      labels: [],
+      body: "Closes #1",
+    });
+    await upsertPullRequestFile(env, { repoFullName: "JSONbored/gittensory", pullNumber: 49, path: "src/feature.ts", status: "modified", additions: 1, deletions: 0, changes: 1, payload: {} });
+
+    let pullFilesFetches = 0;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+      const url = input.toString();
+      if (url.includes("/access_tokens")) return Response.json({ token: "installation-token" });
+      if (url.includes("/pulls/49/files")) {
+        pullFilesFetches += 1;
+        return Response.json([{ filename: "migrations/0099_security.sql", status: "added", additions: 3, deletions: 0, changes: 3 }]);
+      }
+      if (url.includes("/pulls/49/reviews")) return Response.json([]);
+      if (url.includes("/commits/gate125/check-runs")) return Response.json({ total_count: 0, check_runs: [] });
+      if (url.includes("/commits/gate125/status")) return Response.json({ statuses: [] });
+      return new Response("not found", { status: 404 });
+    });
+
+    await processJob(env, {
+      type: "github-webhook",
+      deliveryId: "pre-merge-refresh-sync",
+      eventName: "pull_request",
+      payload: {
+        action: "synchronize",
+        installation: { id: 123, account: { login: "JSONbored", id: 1, type: "User" } },
+        repository: { name: "gittensory", full_name: "JSONbored/gittensory", private: false, owner: { login: "JSONbored" } },
+        pull_request: {
+          number: 49,
+          title: "feat: add migration",
+          state: "open",
+          user: { login: "contributor" },
+          head: { sha: "gate125" },
+          labels: [],
+          body: "Closes #1",
+          mergeable_state: "clean",
+        },
+      },
+    });
+
+    expect(pullFilesFetches).toBeGreaterThan(0);
+    expect((await listPullRequestFiles(env, "JSONbored/gittensory", 49)).map((file) => file.path)).toEqual(["migrations/0099_security.sql"]);
   });
 
   it("pre-merge checks (#review-pre-merge-checks): an enforced check that fails blocks the auto-merge", async () => {

@@ -913,7 +913,7 @@ async function reReviewStoredPullRequest(
     linkedIssueAuthorLogins,
   });
   await persistAdvisory(env, advisory);
-  if (shouldCollectSlopEvidence(settings) || settings.manifestPolicyGateMode !== "off") {
+  if (shouldCollectSlopEvidence(settings) || settings.manifestPolicyGateMode !== "off" || (await shouldRefreshFilesForPreMergeChecks(env, repoFullName))) {
     await refreshPullRequestDetails(env, repoFullName, prNumber).catch(() => undefined);
   }
   const gate = await maybePublishPrPublicSurface(env, installationId, repoFullName, pr, repo, settings, advisory, {
@@ -1757,7 +1757,7 @@ async function processGitHubWebhook(env: Env, deliveryId: string, eventName: str
         }
       }
       if (installationId && shouldProcessPullRequestPublicSurface(payload.action)) {
-        if (shouldCollectSlopEvidence(settings) || settings.manifestPolicyGateMode !== "off" || isAgentConfigured(settings.autonomy)) {
+        if (shouldCollectSlopEvidence(settings) || settings.manifestPolicyGateMode !== "off" || isAgentConfigured(settings.autonomy) || (await shouldRefreshFilesForPreMergeChecks(env, repoFullName))) {
           await refreshPullRequestDetails(env, repoFullName, pr.number);
         }
         // Operator review flow: rebase-if-behind → wait for ALL CI → only THEN review/act. When deferred (a
@@ -1912,6 +1912,11 @@ export async function resolveLinkedIssueAuthorLogins(env: Env, installationId: n
 
 export function shouldCollectSlopEvidence(settings: Pick<RepositorySettings, "slopGateMode" | "mergeReadinessGateMode">): boolean {
   return settings.slopGateMode !== "off" || mergeReadinessGateEnabled(settings);
+}
+
+export async function shouldRefreshFilesForPreMergeChecks(env: Env, repoFullName: string): Promise<boolean> {
+  const checks = resolveReviewPreMergeChecks(await loadRepoFocusManifest(env, repoFullName).catch(() => null));
+  return checks.some((check) => check.whenPaths.length > 0);
 }
 
 export function shouldRunSlopAiAdvisory(settings: Pick<RepositorySettings, "slopAiAdvisory" | "slopGateMode">): boolean {
@@ -3298,7 +3303,7 @@ async function maybeProcessPrPanelRetrigger(env: Env, deliveryId: string, payloa
   // A manual re-run is a re-evaluation surface — the user clicks it AFTER the PR changed — so the slop and
   // manifest-policy gates must see the PR's current files, not whatever is cached. Mirror the webhook path
   // (#866/#925): refresh before publishing so the re-published Gate check reflects the latest file set.
-  if (shouldCollectSlopEvidence(settings) || settings.manifestPolicyGateMode !== "off") {
+  if (shouldCollectSlopEvidence(settings) || settings.manifestPolicyGateMode !== "off" || (await shouldRefreshFilesForPreMergeChecks(env, repoFullName))) {
     await refreshPullRequestDetails(env, repoFullName, pr.number);
   }
   await maybePublishPrPublicSurface(env, installationId, repoFullName, pr, repo, settings, advisory, {
